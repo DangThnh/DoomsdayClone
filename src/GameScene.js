@@ -18,9 +18,9 @@ class GameScene extends Phaser.Scene {
 
         // Vẽ Nhân vật/Súng (Đứng sau tường)
         if (this.textures.exists('player')) {
-            this.player = this.physics.add.sprite(270, 850, 'player').setDisplaySize(60, 60).setDepth(11);
+            this.player = this.physics.add.sprite(270, 850, 'player').setDisplaySize(80, 120).setDepth(11);
         } else {
-            this.player = this.add.rectangle(270, 850, 40, 40, 0x3498db).setDepth(11);
+            this.player = this.add.rectangle(270, 850, 80, 120, 0x3498db).setDepth(11);
             this.physics.add.existing(this.player);
         }
 
@@ -31,16 +31,16 @@ class GameScene extends Phaser.Scene {
         // A. HỒ CHỨA ĐẠN (Chứa tối đa 50 viên đạn cùng lúc để tránh lag)
         this.bulletPool = this.physics.add.group({
             defaultKey: 'bullet',
-            maxSize: 50,
+            maxSize: 100,
             createCallback: function (bullet) {
                 bullet.setName('bullet');
                 bullet.setDepth(5);
                 // Ép kích thước nếu chưa có ảnh
                 if (!bullet.texture || bullet.texture.key === '__DEFAULT') {
-                    bullet.setDisplaySize(10, 20);
+                    bullet.setDisplaySize(20, 30);
                     bullet.setTint(0xf1c40f);
                 } else {
-                    bullet.setDisplaySize(10, 20);
+                    bullet.setDisplaySize(20, 30);
                 }
             }
         });
@@ -53,10 +53,10 @@ class GameScene extends Phaser.Scene {
                 zombie.setName('zombie');
                 zombie.setDepth(6);
                 if (!zombie.texture || zombie.texture.key === '__DEFAULT') {
-                    zombie.setDisplaySize(40, 40);
+                    zombie.setDisplaySize(90, 100);
                     zombie.setTint(0xe74c3c);
                 } else {
-                    zombie.setDisplaySize(40, 40);
+                    zombie.setDisplaySize(90, 100);
                 }
             }
         });
@@ -103,7 +103,7 @@ class GameScene extends Phaser.Scene {
             bullet.rotation = angle + Math.PI/2;
 
             // Bắn đạn đi với tốc độ 600px/s
-            this.physics.moveTo(bullet, targetX, targetY, 600);
+            this.physics.moveTo(bullet, targetX, targetY, 800);
         }
     }
 
