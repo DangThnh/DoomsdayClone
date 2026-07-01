@@ -18,7 +18,7 @@ class GameScene extends Phaser.Scene {
 
         // --- ĐÃ SỬA: BỎ setDisplaySize, DÙNG setScale ĐỂ TRÁNH LỖI ĐỔI ẢNH ---
         if (this.textures.exists('player_center')) {
-            this.player = this.physics.add.sprite(270, 850, 'player_center').setScale(0.4).setDepth(5001); // Dùng Scale 1.0 hoặc tùy chỉnh
+            this.player = this.physics.add.sprite(270, 850, 'player_center').setScale(0.3).setDepth(5001); // Dùng Scale 1.0 hoặc tùy chỉnh
         } else {
             this.player = this.add.rectangle(270, 850, 80, 120, 0x3498db).setDepth(5001);
             this.physics.add.existing(this.player);
@@ -61,6 +61,20 @@ class GameScene extends Phaser.Scene {
             }
         });
 
+         // B.05. HỒ CHỨA CHỮ SÁT THƯƠNG (Tái sử dụng Text để không bị lag khi xả đạn)
+        this.dmgTextPool = this.add.group({
+            maxSize: 50,
+            classType: Phaser.GameObjects.Text, // Báo cho Phaser biết đây là nhóm chứa Text
+            createCallback: function (txt) {
+                txt.setDepth(100);
+                txt.setOrigin(0.5);
+                txt.setStyle({ font: 'bold 22px Arial', fill: '#ffeb3b', stroke: '#000', strokeThickness: 4 });
+                txt.setActive(false);
+                txt.setVisible(false);
+            }
+        });
+
+
         // C. HỒ CHỨA HẠT KINH NGHIỆM (Chứa tối đa 200 hạt)
         this.expPool = this.physics.add.group({
             defaultKey: 'exp_gem',
@@ -82,7 +96,7 @@ class GameScene extends Phaser.Scene {
         // =======================================================
         this.playerLevel = 1;
         this.currentExp = 0;
-        this.maxExp = 100; // Mốc lên cấp 2
+        this.maxExp = 200; // Mốc lên cấp 2
 
         this.expBg = this.add.rectangle(270, 20, 500, 15, 0x333333).setDepth(100);
         this.expFill = this.add.rectangle(20, 20, 0, 15, 0x3498db).setOrigin(0, 0.5).setDepth(101);
@@ -123,6 +137,9 @@ class GameScene extends Phaser.Scene {
         // =======================================================
         this.fireRate = 600; // Tốc độ bắn mặc định: 0.5s / 1 viên
         this.lastFiredTime = 0; // Ghi nhớ thời điểm bắn cuối cùng
+
+        this.hasPiercing = false;  // Kỹ năng Xuyên thấu
+        this.hasExplosive = false; // Kỹ năng Đạn nổ lan
 
         // Radar quét mục tiêu độc lập (Tránh quét 60 lần/giây gây lag)
         this.currentTarget = null;
@@ -208,7 +225,7 @@ class GameScene extends Phaser.Scene {
                 zombie.setVisible(true);
                 
                 // Máu cơ bản của quái
-                zombie.hp = 10; 
+                zombie.hp = 30; 
                 
                 // Tốc độ quái bò xuống ngẫu nhiên
                 let speed = Phaser.Math.Between(50, 80);
@@ -241,36 +258,89 @@ class GameScene extends Phaser.Scene {
 
     
    // --- SỰ KIỆN ĐẠN TRÚNG QUÁI CÓ TÍNH MÁU ---
+    // --- SỰ KIỆN ĐẠN TRÚNG QUÁI (ĐÃ UPDATE HIỆU ỨNG ĐỎ & CHỮ NẨY) ---
+   // --- SỰ KIỆN ĐẠN TRÚNG QUÁI (ĐÃ CẬP NHẬT KỸ NĂNG ROGUELIKE) ---
     handleBulletHitZombie(bullet, zombie) {
+        if (!zombie.active || !bullet.active) return;
 
-         if (!zombie.active || !bullet.active) return;
-        // Đạn nổ mất hình
-        bullet.setActive(false);
-        bullet.setVisible(false);
-        bullet.body.stop(); 
+        // Nếu KHÔNG có kỹ năng Xuyên Thấu -> Đạn trúng mục tiêu sẽ bị tiêu hủy ngay
+        if (!this.hasPiercing) {
+            bullet.setActive(false);
+            bullet.setVisible(false);
+            bullet.body.stop(); 
+            bullet.setPosition(-999, -999);
+        }
 
-        // Tạm thời đạn cùi có Damage = 10 (1 hit chết quái 10HP)
+        // Tạm thời đạn cùi có Damage = 10
         let bulletDamage = 10; 
-        zombie.hp -= bulletDamage;
+        
+        // Trừ máu mục tiêu chính
+        this.applyDamageToZombie(zombie, bulletDamage);
 
-        // Hiệu ứng giật lùi quái khi trúng đạn (Knockback nhẹ)
-        zombie.y -= 5; 
+        // NẾU CÓ KỸ NĂNG NỔ LAN -> Gây thêm sát thương cho bọn xung quanh
+        if (this.hasExplosive) {
+            this.triggerExplosionAoE(zombie.x, zombie.y, bulletDamage * 0.5); // Sát thương nổ lan bằng 50% đạn gốc
+        }
+    }
+    
+    // HÀM TIỆN ÍCH: TRỪ MÁU QUÁI VÀ KIỂM TRA CHẾT
+    applyDamageToZombie(zombie, damage) {
+        if (!zombie.active) return;
 
+        zombie.hp -= damage;
+        zombie.y -= 5; // Knockback
+
+        this.showDamageText(zombie.x, zombie.y, damage);
+
+        zombie.setTint(0xff0000);
+        this.time.delayedCall(100, () => {
+            if (zombie && zombie.active) zombie.clearTint(); 
+        });
+
+        // KIỂM TRA CHẾT
         if (zombie.hp <= 0) {
-            // LƯU LẠI TỌA ĐỘ TRƯỚC KHI QUÁI BIẾN MẤT
             let dropX = zombie.x;
             let dropY = zombie.y;
 
             zombie.setActive(false);
             zombie.setVisible(false);
             zombie.body.stop();
-            zombie.setPosition(-999, -999);
+            zombie.setPosition(-999, -999); 
+            zombie.clearTint(); 
             
-            // --- THÊM: RỚT HẠT KINH NGHIỆM TẠI TỌA ĐỘ QUÁI CHẾT ---
             this.spawnExpGem(dropX, dropY);
         }
     }
 
+    // THUẬT TOÁN TOÁN HỌC: SÁT THƯƠNG DIỆN RỘNG (AoE)
+    // Quét toàn bộ quái vật sống, tính khoảng cách, nếu ở gần tâm nổ thì trừ máu
+    triggerExplosionAoE(x, y, aoeDamage) {
+        let explosionRadius = 80; // Bán kính nổ 80 pixel
+
+        // Hiệu ứng nháy tròn báo hiệu vùng nổ
+        let blastRing = this.add.circle(x, y, explosionRadius, 0xe74c3c, 0.4).setDepth(4);
+        this.tweens.add({
+            targets: blastRing,
+            scale: 1.5,
+            alpha: 0,
+            duration: 300,
+            onComplete: () => blastRing.destroy()
+        });
+
+        // Quét tất cả quái đang sống trong Pool
+        this.zombiePool.getChildren().forEach(otherZombie => {
+            if (otherZombie.active) {
+                // Tính khoảng cách bằng Toán học (Không dùng Collider vật lý để tránh lag)
+                let dist = Phaser.Math.Distance.Between(x, y, otherZombie.x, otherZombie.y);
+                
+                // Nếu quái nằm trong vùng nổ, cho ăn đạn lan!
+                if (dist <= explosionRadius) {
+                    this.applyDamageToZombie(otherZombie, aoeDamage);
+                }
+            }
+        });
+    }
+    
     // --- SỰ KIỆN QUÁI CHẠM TƯỜNG ---
     handleZombieHitWall(zombie, wall) {
         // Quái vật sẽ bị kẹt lại trước tường (do Arcade Collider)
@@ -459,11 +529,20 @@ class GameScene extends Phaser.Scene {
             buttons.push(card, sName, sDesc);
 
             card.on('pointerdown', () => {
+                // --- SỬA: ÁP DỤNG LOGIC 3 KỸ NĂNG ---
                 if (skill.id === 'rapid_fire') {
                     this.fireRate = Math.max(100, this.fireRate - 100); 
-                    console.log("Đã học Tốc Bắn! Tốc độ hiện tại: " + this.fireRate);
+                    console.log("Học TỐC BẮN! Cooldown: " + this.fireRate);
+                } 
+                else if (skill.id === 'pierce') {
+                    this.hasPiercing = true;
+                    console.log("Học ĐẠN XUYÊN THẤU!");
                 }
-
+                else if (skill.id === 'explosive') {
+                    this.hasExplosive = true;
+                    console.log("Học ĐẠN NỔ LAN!");
+                }
+                
                 bgMask.destroy();
                 title.destroy();
                 buttons.forEach(b => b.destroy());
@@ -471,6 +550,41 @@ class GameScene extends Phaser.Scene {
                 this.physics.resume();
                 this.time.paused = false;
             });
+        });
+    }
+
+    // =======================================================
+    // HÀM TIỆN ÍCH: BẮN CHỮ SÁT THƯƠNG TỪ POOL
+    // =======================================================
+    showDamageText(x, y, damage) {
+        // Lấy 1 đối tượng Text tàng hình từ Pool ra
+        let txt = this.dmgTextPool.getFirstDead(false);
+
+        if (!txt) {
+            // Nếu Pool thiếu, đẻ thêm 1 cái (chỉ xảy ra khi bắn quá rát)
+            txt = this.add.text(0, 0, '', { font: 'bold 22px Arial', fill: '#ffeb3b', stroke: '#000', strokeThickness: 4 }).setOrigin(0.5).setDepth(100);
+            this.dmgTextPool.add(txt);
+        }
+
+        // Hồi sinh Text
+        txt.setText(`-${damage}`);
+        txt.setPosition(x, y - 20); // Bắt đầu nẩy từ trên đỉnh đầu con quái
+        txt.setAlpha(1);
+        txt.setActive(true);
+        txt.setVisible(true);
+
+        // Hiệu ứng bay lên và mờ dần trong 0.5s
+        this.tweens.add({
+            targets: txt,
+            y: y - 60, // Bay cao lên
+            alpha: 0,  // Mờ dần
+            duration: 500,
+            ease: 'Cubic.easeOut',
+            onComplete: () => {
+                // Tái chế: Ẩn đi để lần sau gọi lại (KHÔNG DESTROY)
+                txt.setActive(false);
+                txt.setVisible(false);
+            }
         });
     }
 
