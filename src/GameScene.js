@@ -15,6 +15,7 @@ class GameScene extends Phaser.Scene {
         // Vẽ bức tường phòng thủ
           this.wall = this.add.rectangle(270, 800, 540, 20, 0x95a5a6).setDepth(5000);
         this.physics.add.existing(this.wall, true); 
+        this.wall.setName('wall');
 
         // --- ĐÃ SỬA: BỎ setDisplaySize, DÙNG setScale ĐỂ TRÁNH LỖI ĐỔI ẢNH ---
         if (this.textures.exists('player_center')) {
@@ -35,6 +36,8 @@ class GameScene extends Phaser.Scene {
             createCallback: function (bullet) {
                 bullet.setName('bullet');
                 bullet.setDepth(5);
+                 bullet.hitTargets = []; 
+                 
                 // Ép kích thước nếu chưa có ảnh
                 if (!bullet.texture || bullet.texture.key === '__DEFAULT') {
                     bullet.setDisplaySize(20, 30);
@@ -52,14 +55,19 @@ class GameScene extends Phaser.Scene {
             createCallback: function (zombie) {
                 zombie.setName('zombie');
                 zombie.setDepth(6);
+                zombie.id = Phaser.Utils.String.UUID(); 
+                
                 if (!zombie.texture || zombie.texture.key === '__DEFAULT') {
                     zombie.setDisplaySize(90, 100);
                     zombie.setTint(0xe74c3c);
                 } else {
                     zombie.setDisplaySize(90, 100);
                 }
-            }
+            }   
         });
+
+         this.bulletPool.createMultiple({ key: 'bullet', quantity: 100, active: false, visible: false, setXY: { x: -999, y: -999 } });
+        this.zombiePool.createMultiple({ key: 'zombie', quantity: 100, active: false, visible: false, setXY: { x: -999, y: -999 } });
 
          // B.05. HỒ CHỨA CHỮ SÁT THƯƠNG (Tái sử dụng Text để không bị lag khi xả đạn)
         this.dmgTextPool = this.add.group({
@@ -170,19 +178,32 @@ class GameScene extends Phaser.Scene {
             }
         });
 
+          // --- THÊM: HỆ THỐNG MÁU TƯỜNG THÀNH (HP WALL) ---
+        // =======================================================
+        this.wallMaxHp = 100;
+        this.wallHp = 100;
+        
+        // Thanh máu tường ngay trên đầu người chơi
+        this.wallHpBg = this.add.rectangle(270, 780, 200, 10, 0x333333).setDepth(11);
+        this.wallHpFill = this.add.rectangle(170, 780, 200, 10, 0x2ecc71).setOrigin(0, 0.5).setDepth(12);
+        this.wallHpText = this.add.text(270, 780, `${this.wallHp}/${this.wallMaxHp}`, { font: 'bold 10px Arial', fill: '#fff' }).setOrigin(0.5).setDepth(13);
+
     }
 
-    // --- HÀM BẮN ĐẠN TÁI CHẾ (ĐÃ FIX OBJECT POOLING) ---
+    // --- HÀM BẮN ĐẠN TÁI CHẾ (ĐÃ FIX LỖI TÀNG HÌNH) ---
     fireBullet(targetX, targetY) {
-        // Dùng get() bình thường để Phaser tự lo việc quản lý Pool
-        let bullet = this.bulletPool.get(this.player.x, this.player.y);
+        // --- SỬA Ở ĐÂY: DÙNG HÀM get() ĐỂ ÉP ĐẺ ĐẠN MỚI NẾU THIẾU ---
+        let bullet = this.bulletPool.get(270, 850);
         
         if (bullet) {
             bullet.setActive(true);
             bullet.setVisible(true);
+            // Kích hoạt lại physics body phòng trường hợp nó bị tắt
+            bullet.body.enable = true; 
             
-            let angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, targetX, targetY);
-          
+            bullet.hitTargets = [];
+
+            let angle = Phaser.Math.Angle.Between(270, 850, targetX, targetY);
             bullet.rotation = angle + Math.PI/2;
 
             this.physics.moveTo(bullet, targetX, targetY, 800);
@@ -208,28 +229,26 @@ class GameScene extends Phaser.Scene {
 
     // --- HÀM SINH QUÁI BẦY ĐÀN (ĐÃ FIX OBJECT POOLING) ---
     spawnZombie() {
-        let spawnCount = 2; 
+        let spawnCount = 1 + this.playerLevel; 
 
         for (let i = 0; i < spawnCount; i++) {
             let spawnX = Phaser.Math.Between(50, 490);
             let spawnY = Phaser.Math.Between(-100, -20); 
 
-            // CÚ PHÁP CHUẨN CỦA OBJECT POOLING TRONG PHASER 3:
-            // Dùng hàm get() mặc định. Nếu truyền thông số (x, y), nó sẽ tự động tái sử dụng quái chết.
-            // Nếu hồ chứa (Pool) chưa đầy 100 con, nó sẽ tự đẻ thêm con mới.
+            // --- SỬA Ở ĐÂY: DÙNG HÀM get() ---
             let zombie = this.zombiePool.get(spawnX, spawnY);
 
             if (zombie) {
-                // Hồi sinh quái
                 zombie.setActive(true);
                 zombie.setVisible(true);
+                zombie.body.enable = true; // Bật lại vật lý
                 
-                // Máu cơ bản của quái
-                zombie.hp = 30; 
+                zombie.hp = 30 * Math.pow(2, (this.playerLevel - 1)); 
                 
-                // Tốc độ quái bò xuống ngẫu nhiên
-                let speed = Phaser.Math.Between(50, 80);
-                this.physics.moveTo(zombie, spawnX, this.wall.y, speed);
+                let baseSpeed = Phaser.Math.Between(50, 80);
+                let currentSpeed = baseSpeed + (this.playerLevel * 10);
+                
+                this.physics.moveTo(zombie, spawnX, this.wall.y, currentSpeed);
             }
         }
     }
@@ -260,10 +279,18 @@ class GameScene extends Phaser.Scene {
    // --- SỰ KIỆN ĐẠN TRÚNG QUÁI CÓ TÍNH MÁU ---
     // --- SỰ KIỆN ĐẠN TRÚNG QUÁI (ĐÃ UPDATE HIỆU ỨNG ĐỎ & CHỮ NẨY) ---
    // --- SỰ KIỆN ĐẠN TRÚNG QUÁI (ĐÃ CẬP NHẬT KỸ NĂNG ROGUELIKE) ---
+   // --- SỰ KIỆN ĐẠN TRÚNG QUÁI (ĐÃ FIX LỖI XUYÊN THẤU VÀ LAG) ---
     handleBulletHitZombie(bullet, zombie) {
         if (!zombie.active || !bullet.active) return;
 
-        // Nếu KHÔNG có kỹ năng Xuyên Thấu -> Đạn trúng mục tiêu sẽ bị tiêu hủy ngay
+        // --- CƠ CHẾ SỔ ĐEN (MIỄN NHIỄM) ---
+        // Nếu viên đạn này ĐÃ TỪNG chạm vào con quái này rồi -> BỎ QUA NGAY LẬP TỨC!
+        if (bullet.hitTargets.includes(zombie.id)) return;
+
+        // Nếu chưa chạm, thì gây sát thương và Ghi tên con quái vào Sổ đen
+        bullet.hitTargets.push(zombie.id);
+
+        // NẾU KHÔNG CÓ XUYÊN THẤU -> Hủy đạn ngay
         if (!this.hasPiercing) {
             bullet.setActive(false);
             bullet.setVisible(false);
@@ -271,15 +298,15 @@ class GameScene extends Phaser.Scene {
             bullet.setPosition(-999, -999);
         }
 
-        // Tạm thời đạn cùi có Damage = 10
-        let bulletDamage = 10; 
+        // Tạm thời đạn cùi có Damage = 10 
+        let bulletDamage = 15; 
         
-        // Trừ máu mục tiêu chính
+        // Trừ máu mục tiêu chính (Knockback đã được giữ lại trong applyDamageToZombie)
         this.applyDamageToZombie(zombie, bulletDamage);
 
-        // NẾU CÓ KỸ NĂNG NỔ LAN -> Gây thêm sát thương cho bọn xung quanh
+        // NẾU CÓ KỸ NĂNG NỔ LAN -> Gây thêm sát thương
         if (this.hasExplosive) {
-            this.triggerExplosionAoE(zombie.x, zombie.y, bulletDamage * 0.5); // Sát thương nổ lan bằng 50% đạn gốc
+            this.triggerExplosionAoE(zombie.x, zombie.y, bulletDamage * 0.5); 
         }
     }
     
@@ -340,11 +367,51 @@ class GameScene extends Phaser.Scene {
             }
         });
     }
-    
-    // --- SỰ KIỆN QUÁI CHẠM TƯỜNG ---
-    handleZombieHitWall(zombie, wall) {
-        // Quái vật sẽ bị kẹt lại trước tường (do Arcade Collider)
-        // Lát nữa ở Giai đoạn 4, ta sẽ trừ máu tường ở đây!
+
+   // --- SỰ KIỆN QUÁI CHẠM TƯỜNG (CẮN MÁU) - FIX LỖI TƯỜNG BIẾN MẤT ---
+    handleZombieHitWall(obj1, obj2) {
+        // PHÂN BIỆT RÕ RÀNG ĐÂU LÀ QUÁI, ĐÂU LÀ TƯỜNG BẰNG CÁCH CHECK NAME
+        let zombie = null;
+        let wall = null;
+
+        if (obj1.name === 'zombie') zombie = obj1;
+        else if (obj1 === this.wall) wall = obj1;
+
+        if (obj2.name === 'zombie') zombie = obj2;
+        else if (obj2 === this.wall) wall = obj2;
+
+        // Nếu vì lý do nào đó không tìm thấy quái, hủy bỏ
+        if (!zombie || !zombie.active) return;
+
+        // Quái chạm tường -> Tự nổ để cắn máu tường
+        zombie.setActive(false);
+        zombie.setVisible(false);
+        if (zombie.body) zombie.body.stop();
+        zombie.setPosition(-999, -999);
+
+        // Trừ máu tường (Mỗi con cắn mất 5 máu)
+        this.wallHp -= 5;
+
+        // Cập nhật giao diện thanh máu tường
+        let ratio = Math.max(0, this.wallHp / this.wallMaxHp);
+        this.tweens.add({ targets: this.wallHpFill, width: 200 * ratio, duration: 100 });
+        this.wallHpText.setText(`${Math.max(0, this.wallHp)}/${this.wallMaxHp}`);
+        
+        // Đổi màu thanh máu sang đỏ nếu gần chết
+        if (ratio < 0.3) {
+            this.wallHpFill.setFillStyle(0xe74c3c);
+            // Nháy đỏ màn hình báo hiệu Tường đang bị cắn
+            this.cameras.main.flash(100, 255, 0, 0, 0.3);
+        }
+
+        // Bắn chữ trừ máu tường (Màu đỏ mận) bay lên từ giữa tường
+        this.showDamageText(270, 780, 5, false, '#c0392b');
+
+        // NẾU MÁU TƯỜNG <= 0 -> GAME OVER!
+        if (this.wallHp <= 0 && !this.isGameOver) {
+            this.isGameOver = true;
+            this.triggerGameOver();
+        }
     }
 
   update(time, delta) {
@@ -390,7 +457,7 @@ class GameScene extends Phaser.Scene {
 
         if (targetX !== null && targetY !== null) {
             // 1. Tính toán góc thực tế đến mục tiêu (Radian và Độ)
-            let angleRad = Phaser.Math.Angle.Between(this.player.x, this.player.y, targetX, targetY);
+            let angleRad = Phaser.Math.Angle.Between(270, 850, targetX, targetY);
             let angleDeg = Phaser.Math.RadToDeg(angleRad);
 
             // Chặn góc bắn lùi (Cấm súng chĩa xuống đất)
@@ -549,6 +616,9 @@ class GameScene extends Phaser.Scene {
 
                 this.physics.resume();
                 this.time.paused = false;
+
+                 this.lastFiredTime = this.time.now; 
+
             });
         });
     }
@@ -585,6 +655,23 @@ class GameScene extends Phaser.Scene {
                 txt.setActive(false);
                 txt.setVisible(false);
             }
+        });
+    }
+// --- KẾT THÚC TRÒ CHƠI ---
+    triggerGameOver() {
+        this.physics.pause();
+        this.time.paused = true; // Dừng mọi thứ lại
+        
+        let bgMask = this.add.rectangle(270, 480, 540, 960, 0x000000, 0.8).setDepth(2000).setInteractive();
+        this.add.text(270, 400, "THÀNH TRÌ ĐÃ THẤT THỦ!", { font: 'bold 36px Arial', fill: '#e74c3c', stroke: '#000', strokeThickness: 5 }).setOrigin(0.5).setDepth(2001);
+        
+        this.add.text(270, 460, `Bạn đã sống sót đến Cấp ${this.playerLevel}`, { font: '24px Arial', fill: '#fff' }).setOrigin(0.5).setDepth(2001);
+
+        let restartBtn = this.add.rectangle(270, 550, 200, 60, 0x3498db).setInteractive({ useHandCursor: true }).setDepth(2001);
+        this.add.text(270, 550, "CHƠI LẠI", { font: 'bold 24px Arial', fill: '#fff' }).setOrigin(0.5).setDepth(2002);
+
+        restartBtn.on('pointerdown', () => {
+            this.scene.restart();
         });
     }
 
