@@ -8,6 +8,8 @@ class GameScene extends Phaser.Scene {
             this.add.image(270, 480, 'bg').setDisplaySize(540, 960).setDepth();
         }
 
+       // this.physics.world.setBounds(0, 0, 540, 960);
+
         // =======================================================
         // 1. DỰNG TƯỜNG THÀNH VÀ NGƯỜI CHƠI (Bên dưới màn hình)
         // =======================================================
@@ -16,6 +18,8 @@ class GameScene extends Phaser.Scene {
           this.wall = this.add.rectangle(270, 800, 540, 20, 0x95a5a6).setDepth(5000);
         this.physics.add.existing(this.wall, true); 
         this.wall.setName('wall');
+
+    
 
         // --- ĐÃ SỬA: BỎ setDisplaySize, DÙNG setScale ĐỂ TRÁNH LỖI ĐỔI ẢNH ---
         if (this.textures.exists('player_center')) {
@@ -29,22 +33,30 @@ class GameScene extends Phaser.Scene {
         // 2. KHỞI TẠO OBJECT POOLS (HỒ CHỨA VẬT THỂ TÁI SỬ DỤNG)
         // =======================================================
 
-        // A. HỒ CHỨA ĐẠN (Chứa tối đa 50 viên đạn cùng lúc để tránh lag)
+      // A. HỒ CHỨA ĐẠN (ĐÃ FIX LỖI NẢY TRẦN NHÀ)
         this.bulletPool = this.physics.add.group({
             defaultKey: 'bullet',
             maxSize: 100,
             createCallback: function (bullet) {
                 bullet.setName('bullet');
                 bullet.setDepth(5);
-                 bullet.hitTargets = []; 
+                bullet.hitTargets = []; 
                  
-                // Ép kích thước nếu chưa có ảnh
                 if (!bullet.texture || bullet.texture.key === '__DEFAULT') {
                     bullet.setDisplaySize(20, 30);
                     bullet.setTint(0xf1c40f);
                 } else {
                     bullet.setDisplaySize(20, 30);
                 }
+
+               // bullet.setCollideWorldBounds(true);
+                bullet.setBounce(1, 1); 
+
+                // --- MA THUẬT NẰM Ở ĐÂY: KHÓA NẢY TRẦN VÀ ĐÁY ---
+                // Chỉ cho phép đạn va chạm với mép Trái và mép Phải của Camera
+                // Đạn sẽ bay xuyên tọt qua trần nhà và đáy màn hình để hàm Update thu hồi!
+                bullet.body.checkCollision.up = false;
+                bullet.body.checkCollision.down = false;
             }
         });
 
@@ -124,7 +136,12 @@ class GameScene extends Phaser.Scene {
         // Quái vật cắn Tường thành
         this.physics.add.collider(this.zombiePool, this.wall, this.handleZombieHitWall, null, this);
 
-        // =======================================================
+        
+
+      this.physics.add.overlap(this.bulletPool, this.zombiePool, this.handleBulletHitZombie, null, this);
+        this.physics.add.collider(this.zombiePool, this.wall, this.handleZombieHitWall, null, this);
+
+
         // BÀI TEST CHỨC NĂNG (TẠM THỜI ĐỂ KIỂM TRA POOL)
         // =======================================================
         this.input.on('pointerdown', (pointer) => {
@@ -134,7 +151,7 @@ class GameScene extends Phaser.Scene {
 
         // Tự động đẻ quái từ trên trời rơi xuống mỗi giây
         this.time.addEvent({
-            delay: 1000,
+            delay: 2000,
             callback: this.spawnZombie,
             callbackScope: this,
             loop: true
@@ -143,11 +160,20 @@ class GameScene extends Phaser.Scene {
         // =======================================================
         // 4. THÔNG SỐ VŨ KHÍ & RADAR TỰ ĐỘNG BẮN
         // =======================================================
-        this.fireRate = 600; // Tốc độ bắn mặc định: 0.5s / 1 viên
-        this.lastFiredTime = 0; // Ghi nhớ thời điểm bắn cuối cùng
-
-        this.hasPiercing = false;  // Kỹ năng Xuyên thấu
-        this.hasExplosive = false; // Kỹ năng Đạn nổ lan
+        this.fireRate = 600; // Thời gian giữa các lần bắn (ms)
+        this.weaponCooldown = 0; // Thời gian còn lại trước khi có thể bắn tiếp (ms)
+        
+       this.skills = {
+            rapid_fire: 0,   // Tốc độ bắn
+            pierce: 0,       // Xuyên thấu (Cấp 1 = Xuyên 5. Mỗi cấp +1)
+            explosive: 0,    // Nổ lan (Sát thương = Cấp * 5. Bán kính = 80 + Cấp*10)
+            multi_shot: 0,   // Bắn đa tia (Chỉ xuất hiện sau Lv.5)
+            bounce: 0        // Đạn nảy tường (Chỉ xuất hiện sau Lv.5)
+        };
+        
+        // BIẾN QUẢN LÝ LAZE DRONE (Chỉ xuất hiện sau Lv.5)
+        this.hasDrone = false;
+        this.droneLaserTimer = null;
 
         // Radar quét mục tiêu độc lập (Tránh quét 60 lần/giây gây lag)
         this.currentTarget = null;
@@ -191,22 +217,35 @@ class GameScene extends Phaser.Scene {
     }
 
     // --- HÀM BẮN ĐẠN TÁI CHẾ (ĐÃ FIX LỖI TÀNG HÌNH) ---
-    fireBullet(targetX, targetY) {
-        // --- SỬA Ở ĐÂY: DÙNG HÀM get() ĐỂ ÉP ĐẺ ĐẠN MỚI NẾU THIẾU ---
-        let bullet = this.bulletPool.get(270, 850);
-        
-        if (bullet) {
-            bullet.setActive(true);
-            bullet.setVisible(true);
-            // Kích hoạt lại physics body phòng trường hợp nó bị tắt
-            bullet.body.enable = true; 
+  // --- HÀM BẮN ĐẠN TÁI CHẾ (HỖ TRỢ ĐA TIA VÀ ĐẠN NẢY) ---
+   fireBullet(targetX, targetY) {
+        let centerAngle = Phaser.Math.Angle.Between(this.player.x, this.player.y, targetX, targetY);
+        let bulletCount = 1 + (this.skills.multi_shot * 2); 
+        let spreadAngleRadian = Phaser.Math.DegToRad(15); 
+        let startAngle = centerAngle - (Math.floor(bulletCount / 2) * spreadAngleRadian);
+
+        for (let i = 0; i < bulletCount; i++) {
+            let currentBulletAngle = startAngle + (i * spreadAngleRadian);
             
-            bullet.hitTargets = [];
+            let vX = Math.cos(currentBulletAngle);
+            let vY = Math.sin(currentBulletAngle);
 
-            let angle = Phaser.Math.Angle.Between(270, 850, targetX, targetY);
-            bullet.rotation = angle + Math.PI/2;
+            let bullet = this.bulletPool.getFirstDead(false, this.player.x, this.player.y);
+            
+            if (bullet) {
+                bullet.setActive(true);
+                bullet.setVisible(true);
+                
+                // --- ĐÃ FIX CỨNG: Ép tạo một Array hoàn toàn mới và Độc Lập cho mỗi viên đạn ---
+                bullet.hitTargets = new Array(); 
+                
+                bullet.bouncesLeft = this.skills.bounce > 0 ? 3 : 0; 
+                bullet.rotation = currentBulletAngle + Math.PI/2;
 
-            this.physics.moveTo(bullet, targetX, targetY, 800);
+                let speed = 800; 
+                // Cú lừa Physics: Bắt buộc gọi setVelocity để đè đứt mọi quán tính cũ từ kiếp trước của viên đạn
+                bullet.body.setVelocity(vX * speed, vY * speed);
+            }
         }
     }
 
@@ -243,10 +282,10 @@ class GameScene extends Phaser.Scene {
                 zombie.setVisible(true);
                 zombie.body.enable = true; // Bật lại vật lý
                 
-                zombie.hp = 30 * Math.pow(2, (this.playerLevel - 1)); 
+                zombie.hp = 20 * Math.pow(2, (this.playerLevel - 1)); 
                 
                 let baseSpeed = Phaser.Math.Between(50, 80);
-                let currentSpeed = baseSpeed + (this.playerLevel * 10);
+                let currentSpeed = baseSpeed + (this.playerLevel * 5);
                 
                 this.physics.moveTo(zombie, spawnX, this.wall.y, currentSpeed);
             }
@@ -280,34 +319,79 @@ class GameScene extends Phaser.Scene {
     // --- SỰ KIỆN ĐẠN TRÚNG QUÁI (ĐÃ UPDATE HIỆU ỨNG ĐỎ & CHỮ NẨY) ---
    // --- SỰ KIỆN ĐẠN TRÚNG QUÁI (ĐÃ CẬP NHẬT KỸ NĂNG ROGUELIKE) ---
    // --- SỰ KIỆN ĐẠN TRÚNG QUÁI (ĐÃ FIX LỖI XUYÊN THẤU VÀ LAG) ---
+   // --- SỰ KIỆN ĐẠN TRÚNG QUÁI (ĐÃ CỘNG DỒN SKILL MẠNH DẦN) ---
     handleBulletHitZombie(bullet, zombie) {
         if (!zombie.active || !bullet.active) return;
-
-        // --- CƠ CHẾ SỔ ĐEN (MIỄN NHIỄM) ---
-        // Nếu viên đạn này ĐÃ TỪNG chạm vào con quái này rồi -> BỎ QUA NGAY LẬP TỨC!
         if (bullet.hitTargets.includes(zombie.id)) return;
 
-        // Nếu chưa chạm, thì gây sát thương và Ghi tên con quái vào Sổ đen
         bullet.hitTargets.push(zombie.id);
 
-        // NẾU KHÔNG CÓ XUYÊN THẤU -> Hủy đạn ngay
-        if (!this.hasPiercing) {
+        // SÁT THƯƠNG GỐC CỦA ĐẠN (Mặc định là 10)
+        let bulletDamage = 15; 
+        
+        this.applyDamageToZombie(zombie, bulletDamage);
+
+        // 1. KỸ NĂNG NỔ LAN (Sức mạnh tăng theo Level)
+        if (this.skills.explosive > 0) {
+            // Sát thương nổ = 5 * Cấp kỹ năng (Lv1 = 5 dame, Lv2 = 10 dame...)
+            let aoeDamage = this.skills.explosive * 10; 
+            // Bán kính nổ = 60 + 15 * Cấp
+            let aoeRadius = 60 + (this.skills.explosive * 20);
+            
+            this.triggerExplosionAoE(zombie.x, zombie.y, aoeDamage, aoeRadius); 
+        }
+
+        // 2. KỸ NĂNG XUYÊN THẤU (Số lượng xuyên tăng theo Level)
+        let maxPierce = 0;
+        if (this.skills.pierce > 0) {
+            maxPierce = 4 + this.skills.pierce; // Lv1 = Xuyên 5 con, Lv2 = Xuyên 6 con...
+        }
+
+        // Nếu Đạn đã đâm trúng số lượng quái vượt quá sức chịu đựng xuyên thấu -> Tắt đạn!
+        if (bullet.hitTargets.length > maxPierce) {
             bullet.setActive(false);
             bullet.setVisible(false);
             bullet.body.stop(); 
             bullet.setPosition(-999, -999);
+            
+            // XÓA SỔ ĐEN CỦA VIÊN ĐẠN NÀY SAU KHI NÓ CHẾT ĐỂ LẦN SAU BẮN LẠI KHÔNG BỊ LỖI
+            bullet.hitTargets = []; 
         }
+    }
 
-        // Tạm thời đạn cùi có Damage = 10 
-        let bulletDamage = 15; 
-        
-        // Trừ máu mục tiêu chính (Knockback đã được giữ lại trong applyDamageToZombie)
-        this.applyDamageToZombie(zombie, bulletDamage);
+    // --- XỬ LÝ KHI ĐẠN ĐẬP VÁCH TƯỜNG (Cập nhật góc xoay) ---
+    handleBulletBounce(bullet, wall) {
+        if (!bullet.active) return;
 
-        // NẾU CÓ KỸ NĂNG NỔ LAN -> Gây thêm sát thương
-        if (this.hasExplosive) {
-            this.triggerExplosionAoE(zombie.x, zombie.y, bulletDamage * 0.5); 
+        if (bullet.bouncesLeft > 0) {
+            bullet.bouncesLeft--;
+            
+            // Xoay hình ảnh viên đạn cho khớp với hướng nảy ra của Physics
+            let newAngle = Math.atan2(bullet.body.velocity.y, bullet.body.velocity.x);
+            bullet.rotation = newAngle + Math.PI/2;
+            
+        } else {
+            // Hết lượt nảy -> Biến mất!
+            this.recycleBullet(bullet);
         }
+    }
+
+    // Cập nhật lại hàm triggerExplosionAoE để nhận bán kính động
+    triggerExplosionAoE(x, y, aoeDamage, explosionRadius) {
+        let blastRing = this.add.circle(x, y, explosionRadius, 0xe74c3c, 0.4).setDepth(4);
+        this.tweens.add({
+            targets: blastRing, scale: 1.5, alpha: 0, duration: 300,
+            onComplete: () => blastRing.destroy()
+        });
+
+        this.zombiePool.getChildren().forEach(otherZombie => {
+            if (otherZombie.active) {
+                let dist = Phaser.Math.Distance.Between(x, y, otherZombie.x, otherZombie.y);
+                if (dist <= explosionRadius) {
+                    this.applyDamageToZombie(otherZombie, aoeDamage);
+                }
+            }
+        });
     }
     
     // HÀM TIỆN ÍCH: TRỪ MÁU QUÁI VÀ KIỂM TRA CHẾT
@@ -339,34 +423,6 @@ class GameScene extends Phaser.Scene {
         }
     }
 
-    // THUẬT TOÁN TOÁN HỌC: SÁT THƯƠNG DIỆN RỘNG (AoE)
-    // Quét toàn bộ quái vật sống, tính khoảng cách, nếu ở gần tâm nổ thì trừ máu
-    triggerExplosionAoE(x, y, aoeDamage) {
-        let explosionRadius = 80; // Bán kính nổ 80 pixel
-
-        // Hiệu ứng nháy tròn báo hiệu vùng nổ
-        let blastRing = this.add.circle(x, y, explosionRadius, 0xe74c3c, 0.4).setDepth(4);
-        this.tweens.add({
-            targets: blastRing,
-            scale: 1.5,
-            alpha: 0,
-            duration: 300,
-            onComplete: () => blastRing.destroy()
-        });
-
-        // Quét tất cả quái đang sống trong Pool
-        this.zombiePool.getChildren().forEach(otherZombie => {
-            if (otherZombie.active) {
-                // Tính khoảng cách bằng Toán học (Không dùng Collider vật lý để tránh lag)
-                let dist = Phaser.Math.Distance.Between(x, y, otherZombie.x, otherZombie.y);
-                
-                // Nếu quái nằm trong vùng nổ, cho ăn đạn lan!
-                if (dist <= explosionRadius) {
-                    this.applyDamageToZombie(otherZombie, aoeDamage);
-                }
-            }
-        });
-    }
 
    // --- SỰ KIỆN QUÁI CHẠM TƯỜNG (CẮN MÁU) - FIX LỖI TƯỜNG BIẾN MẤT ---
     handleZombieHitWall(obj1, obj2) {
@@ -414,17 +470,49 @@ class GameScene extends Phaser.Scene {
         }
     }
 
-  update(time, delta) {
-           // --- QUẢN LÝ DỌN RÁC (THU HỒI ĐẠN BAY RA KHỎI MÀN HÌNH AN TOÀN) ---
+        update(time, delta) {
+       // =======================================================
+        // --- QUẢN LÝ ĐẠN BẰNG TOÁN HỌC (THU HỒI & NẢY TƯỜNG) ---
+        // =======================================================
         this.bulletPool.getChildren().forEach(bullet => {
-            if (bullet.active && (bullet.y < -50 || bullet.x < -50 || bullet.x > 590 || bullet.y > 1000)) {
-                bullet.setActive(false);
-                bullet.setVisible(false);
-                bullet.body.stop();
-                // FIX LỖI TÀNG HÌNH: Ép đạn văng ra tít góc vũ trụ để quái không quẹt trúng!
-                bullet.setPosition(-999, -999); 
+            if (!bullet.active) return;
+
+            // 1. Nếu đạn bay ra khỏi trần nhà (Y < 0) hoặc lọt xuống đáy (Y > 1000) -> Hủy
+            if (bullet.y < -50 || bullet.y > 1000) {
+                this.recycleBullet(bullet);
+                return;
+            }
+
+            // 2. LOGIC NẢY TƯỜNG TRÁI / PHẢI
+            let isHitLeft = bullet.x <= 10;
+            let isHitRight = bullet.x >= 530;
+
+            if (isHitLeft || isHitRight) {
+                // Nếu chưa có skill Nảy (bouncesLeft <= 0), cho bay xuyên luôn ra vũ trụ!
+                if (bullet.bouncesLeft <= 0) {
+                    if (bullet.x < -50 || bullet.x > 590) { // Đợi nó bay hẳn ra ngoài rồi thu hồi
+                        this.recycleBullet(bullet);
+                    }
+                    return; 
+                }
+
+                // Nếu có skill Nảy: Ép nó lộn ngược vận tốc X
+                bullet.bouncesLeft--;
+                
+                bullet.body.velocity.x *= -1; 
+                
+                // Đẩy viên đạn lùi lại 1 tẹo để không bị dính vào mép tường gây nảy liên tục 60 lần/giây
+                if (isHitLeft) bullet.x = 15;
+                if (isHitRight) bullet.x = 525;
+
+                // Cập nhật lại góc xoay hình ảnh của viên đạn cho khớp với hướng bay mới
+                let newAngle = Math.atan2(bullet.body.velocity.y, bullet.body.velocity.x);
+                bullet.rotation = newAngle + Math.PI/2;
             }
         });
+
+
+        // ... (Phần Y-Sorting và TỔNG TƯ LỆNH SÚNG giữ nguyên) ...
         // =======================================================
         // --- THÊM MỚI: Y-SORTING (PHÂN LỚP ĐỒ HỌA CHIỀU SÂU) ---
         // Sắp xếp lại Depth của toàn bộ Quái vật đang sống dựa vào tọa độ Y.
@@ -443,9 +531,14 @@ class GameScene extends Phaser.Scene {
         });
         // =======================================================
 
-      // --- TỔNG TƯ LỆNH SÚNG (ĐỔI ẢNH + XOAY ĐỘNG) ---
+     // --- TỔNG TƯ LỆNH SÚNG (ĐÃ FIX COOLDOWN BẰNG DELTA TIME) ---
         let targetX = null;
         let targetY = null;
+
+        // Trừ lùi thời gian đếm ngược của đạn (Nếu > 0 thì trừ dần bằng delta)
+        if (this.weaponCooldown > 0) {
+            this.weaponCooldown -= delta;
+        }
 
         if (this.isManualFiring && this.manualTarget) {
             targetX = this.manualTarget.x;
@@ -456,48 +549,36 @@ class GameScene extends Phaser.Scene {
         }
 
         if (targetX !== null && targetY !== null) {
-            // 1. Tính toán góc thực tế đến mục tiêu (Radian và Độ)
-            let angleRad = Phaser.Math.Angle.Between(270, 850, targetX, targetY);
+            let angleRad = Phaser.Math.Angle.Between(this.player.x, this.player.y, targetX, targetY);
             let angleDeg = Phaser.Math.RadToDeg(angleRad);
 
-            // Chặn góc bắn lùi (Cấm súng chĩa xuống đất)
             if (angleDeg > 0) return; 
 
-            // 2. KHỞI TẠO BIẾN ĐỔI ẢNH VÀ BÙ TRỪ GÓC XOAY (OFFSET)
             let weaponKey = 'player_center';
-            let rotationOffset = Math.PI / 2; // Mặc định là +90 độ (Chĩa thẳng)
+            let rotationOffset = Math.PI / 2; 
 
-            // Góc Trái (từ -180 đến -135)
             if (angleDeg >= -180 && angleDeg < -125) {
                 weaponKey = 'player_left';
-                // Bù trừ 135 độ (Giả định ảnh gốc player_left đã vẽ nghiêng sẵn sang trái 45 độ)
                 rotationOffset = (Math.PI / 1.44); 
-            } 
-            // Góc Giữa (từ -135 đến -45)
-            else if (angleDeg >= -125 && angleDeg <= -55) {
+            } else if (angleDeg >= -125 && angleDeg <= -55) {
                 weaponKey = 'player_center';
-                // Bù trừ 90 độ (Giả định ảnh gốc player_center vẽ chĩa thẳng)
                 rotationOffset = Math.PI / 2; 
-            } 
-            // Góc Phải (từ -45 đến 0)
-            else if (angleDeg > -55 && angleDeg <= 0) {
+            } else if (angleDeg > -55 && angleDeg <= 0) {
                 weaponKey = 'player_right';
-                // Bù trừ 45 độ (Giả định ảnh gốc player_right đã vẽ nghiêng sẵn sang phải 45 độ)
                 rotationOffset = Math.PI / 3.27; 
             }
 
-            // 3. THAY ĐỔI ẢNH (CHỈ KHI CẦN THIẾT ĐỂ TRÁNH GIẬT HÌNH)
             if (this.textures.exists(weaponKey) && this.player.texture.key !== weaponKey) {
                 this.player.setTexture(weaponKey);
             }
 
-            // 4. XOAY SÚNG ĐỂ KHỚP 100% VỚI ĐƯỜNG ĐẠN BAY
             this.player.rotation = angleRad + rotationOffset;
 
-            // 5. NHẢ ĐẠN
-            if (time > this.lastFiredTime) {
+            // --- BÓP CÒ: Nếu Cooldown <= 0 thì nhả đạn! ---
+            if (this.weaponCooldown <= 0) {
                 this.fireBullet(targetX, targetY);
-                this.lastFiredTime = time + this.fireRate; 
+                // Reset lại Cooldown bằng đúng tốc độ bắn hiện tại
+                this.weaponCooldown = this.fireRate; 
             }
         }
     }   
@@ -577,13 +658,27 @@ class GameScene extends Phaser.Scene {
         let bgMask = this.add.rectangle(270, 480, 540, 960, 0x000000, 0.8).setDepth(2000).setInteractive();
         let title = this.add.text(270, 200, "LÊN CẤP! CHỌN KỸ NĂNG", { font: 'bold 36px Arial', fill: '#f1c40f', stroke: '#000', strokeThickness: 5 }).setOrigin(0.5).setDepth(2001);
 
-        const ALL_SKILLS = [
-            { id: 'rapid_fire', name: "TỐC BẮN", desc: "Giảm thời gian hồi đạn 20%", color: 0x3498db },
-            { id: 'explosive', name: "ĐẠN NỔ", desc: "Đạn gây nổ lan (Sắp ra mắt)", color: 0xe74c3c },
-            { id: 'pierce', name: "XUYÊN THẤU", desc: "Đạn xuyên qua 1 mục tiêu (Sắp ra mắt)", color: 0x9b59b6 }
+        // KHO KỸ NĂNG ĐỘNG (Dựa vào cấp độ người chơi và cấp kỹ năng hiện tại)
+        let availableSkills = [
+            { id: 'rapid_fire', name: `TỐC BẮN (Lv.${this.skills.rapid_fire + 1})`, desc: "Giảm thời gian hồi đạn", color: 0x3498db },
+            { id: 'explosive', name: `ĐẠN NỔ (Lv.${this.skills.explosive + 1})`, desc: "Tăng sát thương và bán kính nổ lan", color: 0xe74c3c },
+            { id: 'pierce', name: `XUYÊN THẤU (Lv.${this.skills.pierce + 1})`, desc: `Đạn xuyên thêm 1 mục tiêu`, color: 0x9b59b6 }
         ];
 
-        let choices = ALL_SKILLS.slice(0, 3);
+        // TỪ LEVEL 5 TRỞ LÊN: Mở khóa các kỹ năng Tối Thượng
+        if (this.playerLevel >= 5) {
+            availableSkills.push({ id: 'multi_shot', name: `ĐA TIA (Lv.${this.skills.multi_shot + 1})`, desc: "Bắn thêm đạn cùng lúc", color: 0xf39c12 });
+            availableSkills.push({ id: 'bounce', name: `NẢY TƯỜNG (Lv.${this.skills.bounce + 1})`, desc: "Đạn nảy lại khi chạm tường", color: 0x2ecc71 });
+            
+            if (!this.hasDrone) {
+                availableSkills.push({ id: 'drone', name: "DRONE LASER", desc: "Triệu hồi Drone xả Laser", color: 0x00bcd4 });
+            }
+        }
+
+        // Đảo ngẫu nhiên mảng và bốc ra đúng 3 kỹ năng
+        Phaser.Utils.Array.Shuffle(availableSkills);
+        let choices = availableSkills.slice(0, 3);
+        
         let buttons = [];
 
         choices.forEach((skill, index) => {
@@ -596,33 +691,29 @@ class GameScene extends Phaser.Scene {
             buttons.push(card, sName, sDesc);
 
             card.on('pointerdown', () => {
-                // --- SỬA: ÁP DỤNG LOGIC 3 KỸ NĂNG ---
+                
+                // --- XỬ LÝ NÂNG CẤP CỘNG DỒN KỸ NĂNG ---
+                if (skill.id === 'drone') {
+                    this.hasDrone = true;
+                    this.activateDrone();
+                } else {
+                    this.skills[skill.id]++; // Tăng cấp kỹ năng lên 1
+                }
+
                 if (skill.id === 'rapid_fire') {
                     this.fireRate = Math.max(100, this.fireRate - 100); 
-                    console.log("Học TỐC BẮN! Cooldown: " + this.fireRate);
                 } 
-                else if (skill.id === 'pierce') {
-                    this.hasPiercing = true;
-                    console.log("Học ĐẠN XUYÊN THẤU!");
-                }
-                else if (skill.id === 'explosive') {
-                    this.hasExplosive = true;
-                    console.log("Học ĐẠN NỔ LAN!");
-                }
-                
+
+                // Dọn dẹp Popup
                 bgMask.destroy();
                 title.destroy();
                 buttons.forEach(b => b.destroy());
 
                 this.physics.resume();
                 this.time.paused = false;
-
-                 this.lastFiredTime = this.time.now; 
-
             });
         });
     }
-
     // =======================================================
     // HÀM TIỆN ÍCH: BẮN CHỮ SÁT THƯƠNG TỪ POOL
     // =======================================================
@@ -673,6 +764,14 @@ class GameScene extends Phaser.Scene {
         restartBtn.on('pointerdown', () => {
             this.scene.restart();
         });
+    }
+
+    recycleBullet(bullet) {
+        bullet.setActive(false);
+        bullet.setVisible(false);
+        bullet.body.stop();
+        bullet.setPosition(-999, -999);
+        bullet.hitTargets = [];
     }
 
 }
