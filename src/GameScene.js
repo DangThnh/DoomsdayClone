@@ -79,7 +79,7 @@ class GameScene extends Phaser.Scene {
         });
 
          this.bulletPool.createMultiple({ key: 'bullet', quantity: 100, active: false, visible: false, setXY: { x: -999, y: -999 } });
-        this.zombiePool.createMultiple({ key: 'zombie', quantity: 100, active: false, visible: false, setXY: { x: -999, y: -999 } });
+        this.zombiePool.createMultiple({ key: 'zombie', quantity: 50, active: false, visible: false, setXY: { x: -999, y: -999 } });
 
          // B.05. HỒ CHỨA CHỮ SÁT THƯƠNG (Tái sử dụng Text để không bị lag khi xả đạn)
         this.dmgTextPool = this.add.group({
@@ -138,10 +138,7 @@ class GameScene extends Phaser.Scene {
 
         
 
-      this.physics.add.overlap(this.bulletPool, this.zombiePool, this.handleBulletHitZombie, null, this);
-        this.physics.add.collider(this.zombiePool, this.wall, this.handleZombieHitWall, null, this);
-
-
+     
         // BÀI TEST CHỨC NĂNG (TẠM THỜI ĐỂ KIỂM TRA POOL)
         // =======================================================
         this.input.on('pointerdown', (pointer) => {
@@ -190,7 +187,7 @@ class GameScene extends Phaser.Scene {
         this.manualTarget = null; 
         this.isManualFiring = false;
         this.time.addEvent({
-            delay: 500, // Cứ 100ms (0.1s) Radar quét 1 lần tìm quái
+            delay: 100, // Cứ 100ms (0.1s) Radar quét 1 lần tìm quái
             callback: this.findNearestZombie,
             callbackScope: this,
             loop: true
