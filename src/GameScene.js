@@ -63,7 +63,7 @@ class GameScene extends Phaser.Scene {
         // B. HỒ CHỨA QUÁI VẬT (Chứa tối đa 100 con quái)
         this.zombiePool = this.physics.add.group({
             defaultKey: 'zombie',
-            maxSize: 100,
+            maxSize: 50,
             createCallback: function (zombie) {
                 zombie.setName('zombie');
                 zombie.setDepth(6);
@@ -172,8 +172,18 @@ class GameScene extends Phaser.Scene {
         };
         
         // BIẾN QUẢN LÝ LAZE DRONE (Chỉ xuất hiện sau Lv.5)
-        this.hasDrone = false;
-        this.droneLaserTimer = null;
+          this.hasDrone = false;
+        this.droneLevel = 0; // Cấp 1, 2, 3 tương ứng cooldown 10s, 7s, 5s
+        
+        // Cooldown động theo Level
+        this.getDroneCooldown = () => {
+            if (this.droneLevel === 1) return 10000;
+            if (this.droneLevel === 2) return 7000;
+            return 5000; // Cấp 3 (Tối đa)
+        };
+        
+        this.droneTimer = 0; 
+        this.isDroneFiring = false;
 
         // Radar quét mục tiêu độc lập (Tránh quét 60 lần/giây gây lag)
         this.currentTarget = null;
@@ -247,6 +257,115 @@ class GameScene extends Phaser.Scene {
                 bullet.body.setVelocity(vX * speed, vY * speed);
             }
         }
+    }
+
+    // =======================================================
+    // HỆ THỐNG DRONE LASER HỦY DIỆT
+    // =======================================================
+    activateDrone() {
+        this.droneLevel++; // Nâng cấp drone
+
+        if (!this.droneSprite) {
+            // LẦN ĐẦU HỌC KỸ NĂNG: Khởi tạo Drone lơ lửng bên trái súng (X=150, Y=850)
+            if (this.textures.exists('drone')) {
+                this.droneSprite = this.add.sprite(150, 850, 'drone').setDisplaySize(60, 60).setDepth(15);
+            } else {
+                this.droneSprite = this.add.circle(150, 850, 20, 0x00bcd4).setDepth(15);
+            }
+
+            // Hoạt ảnh lơ lửng nhịp nhàng vĩnh viễn (Idle Animation)
+            this.tweens.add({
+                targets: this.droneSprite, y: 840, yoyo: true, repeat: -1, duration: 800, ease: 'Sine.easeInOut'
+            });
+
+            // Khởi động đồng hồ đếm ngược chờ bắn
+            this.droneTimer = this.time.now + this.getDroneCooldown();
+            
+            // Vẽ sẵn tia Laser nhưng ẨN ĐI
+            if (this.textures.exists('laser_beam')) {
+                this.laserBeam = this.add.sprite(0, 0, 'laser_beam').setOrigin(0.5, 1).setDepth(14).setVisible(false).setAlpha(0.8);
+            } else {
+                this.laserBeam = this.add.rectangle(0, 0, 20, 1000, 0x00ffff, 0.8).setOrigin(0.5, 1).setDepth(14).setVisible(false);
+            }
+            
+            // Đường thẳng Toán học (Geom Line) để quét sát thương
+            this.laserLine = new Phaser.Geom.Line(0, 0, 0, 0);
+        } else {
+            console.log(`Drone nâng lên Cấp ${this.droneLevel}! Cooldown: ${this.getDroneCooldown() / 1000}s`);
+        }
+    }
+
+    fireDroneLaser() {
+        this.isDroneFiring = true;
+        
+        // 1. CHỌN VỊ TRÍ BAY NGẪU NHIÊN TRÊN TRỤC NGANG CỦA DRONE (X từ 50 đến 490, Y giữ nguyên 850)
+        let targetDroneX = Phaser.Math.Between(50, 490);
+        
+        // 2. CHỌN ĐIỂM NGẮM NGẪU NHIÊN Ở ĐỈNH MÀN HÌNH (X từ 0 đến 540, Y = 0)
+        let targetAimX = Phaser.Math.Between(0, 540);
+        let targetAimY = 0;
+
+        // DỪNG HOẠT ẢNH LƠ LỬNG CŨ, BAY NHANH ĐẾN VỊ TRÍ BẮN
+        this.tweens.killTweensOf(this.droneSprite);
+        
+        this.tweens.add({
+            targets: this.droneSprite,
+            x: targetDroneX,
+            y: 850,
+            duration: 300,
+            ease: 'Power2',
+            onComplete: () => {
+                // --- ĐÃ TỚI VỊ TRÍ: BẮT ĐẦU XẢ LASER ---
+                
+                // Tính góc xoay từ Drone đến điểm ngắm đỉnh màn hình
+                let angleRad = Phaser.Math.Angle.Between(targetDroneX, 850, targetAimX, targetAimY);
+                this.droneSprite.rotation = angleRad + Math.PI/2; // Drone chĩa nòng theo góc
+
+                // Thiết lập Tọa độ Tia Laser (Gốc bắt đầu từ mồm Drone)
+                this.laserBeam.setPosition(targetDroneX, 850);
+                this.laserBeam.rotation = angleRad + Math.PI/2;
+                
+                // Kéo dài tia Laser chạm tới trần nhà
+                let dist = Phaser.Math.Distance.Between(targetDroneX, 850, targetAimX, targetAimY);
+                this.laserBeam.displayHeight = dist; 
+                this.laserBeam.displayWidth = 80;
+                this.laserBeam.setVisible(true);
+
+                
+
+                // Cập nhật Đường thẳng Toán học (Dùng để quét sát thương AoE trong vòng lặp)
+                this.laserLine.setTo(targetDroneX, 850, targetAimX, targetAimY);
+
+                // --- JUICY EFFECTS (RUNG LẮC DRONE VÀ CHỚP SÁNG TIA LASER) ---
+                this.cameras.main.shake(5000, 0.005); // Rung nhẹ màn hình liên tục 5 giây
+                
+                let laserTween = this.tweens.add({
+                    targets: this.laserBeam, alpha: { from: 1, to: 0.4 }, yoyo: true, repeat: -1, duration: 100
+                });
+
+                let droneShake = this.tweens.add({
+                    targets: this.droneSprite, x: targetDroneX + Phaser.Math.Between(-3, 3), y: 850 + Phaser.Math.Between(-3, 3), yoyo: true, repeat: -1, duration: 50
+                });
+
+                // --- SAU 5 GIÂY: TẮT LASER VÀ BAY VỀ CHỖ CŨ ---
+                this.time.delayedCall(5000, () => {
+                    this.isDroneFiring = false;
+                    this.laserBeam.setVisible(false);
+                    laserTween.stop();
+                    droneShake.stop();
+                    
+                    this.droneSprite.rotation = 0; // Trả lại dáng thẳng đứng
+
+                    // Lên đạn lại (Reset đồng hồ)
+                    this.droneTimer = this.time.now + this.getDroneCooldown();
+
+                    // Trả Drone về lơ lửng bên trái súng (X=150)
+                    this.tweens.add({ targets: this.droneSprite, x: 150, y: 850, duration: 500, ease: 'Power1', onComplete: () => {
+                        this.tweens.add({ targets: this.droneSprite, y: 840, yoyo: true, repeat: -1, duration: 800, ease: 'Sine.easeInOut' });
+                    }});
+                });
+            }
+        });
     }
 
     // --- HÀM XỬ LÝ BẮN THỦ CÔNG ---
@@ -510,6 +629,39 @@ class GameScene extends Phaser.Scene {
                 bullet.rotation = newAngle + Math.PI/2;
             }
         });
+
+        // =======================================================
+        // --- XỬ LÝ SÁT THƯƠNG DRONE LASER LIÊN TỤC (Tia Toán Học) ---
+        // =======================================================
+        if (this.hasDrone) {
+            // Kiểm tra Cooldown: Nếu tới giờ mà chưa bắn, bắt đầu xả Laze
+            if (time > this.droneTimer && !this.isDroneFiring) {
+                this.fireDroneLaser();
+            }
+
+            // Nếu Laze đang phụt (Kéo dài 5s) -> Quét quái và thui rụi chúng!
+            if (this.isDroneFiring) {
+                // Sát thương tia laze tăng tiến khủng khiếp theo cấp Drone (Level 1: 5, Level 2: 10, Level 3: 15 / Frame)
+                let laserDamage = this.droneLevel * 10; 
+
+                this.zombiePool.getChildren().forEach(zombie => {
+                    if (zombie.active) {
+                        // Tạo một hình chữ nhật ảo bao quanh con quái
+                        let zRect = new Phaser.Geom.Rectangle(zombie.x - 20, zombie.y - 20, 40, 40);
+                        
+                        // Dùng Toán Học siêu đẳng: Nếu Đường Laze cắt ngang Hình chữ nhật của con quái -> BÚNG MÁU!
+                        if (Phaser.Geom.Intersects.LineToRectangle(this.laserLine, zRect)) {
+                            this.applyDamageToZombie(zombie, laserDamage);
+                            
+                            // Tạo khói đỏ xì ra từ người con quái bị nướng
+                            if (Math.random() < 0.2) { 
+                                this.showDamageText(zombie.x + Phaser.Math.Between(-15,15), zombie.y, laserDamage, false, '#00ffff');
+                            }
+                        }
+                    }
+                });
+            }
+        }
 
 
         // ... (Phần Y-Sorting và TỔNG TƯ LỆNH SÚNG giữ nguyên) ...

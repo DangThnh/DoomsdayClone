@@ -14,6 +14,8 @@ class BootScene extends Phaser.Scene {
 
         this.load.image('exp_gem', 'exp_gem.png'); // Ảnh viên kim cương nhỏ
 
+        this.load.image('drone', 'drone.png');
+        this.load.image('laser_beam', 'laser_beam.png');
     }
     create() { this.scene.start('GameScene'); }
 }
